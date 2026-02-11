@@ -1,26 +1,33 @@
-# escape=`
+FROM --platform=linux/amd64 ubuntu:22.04
 
-FROM --platform=windows/amd64 mcr.microsoft.com/windows/servercore:ltsc2022 AS installer
+ENV DEBIAN_FRONTEND=noninteractive
+ENV WINEPREFIX=/opt/wineprefix
+ENV WINEARCH=win32
+ENV DISPLAY=:0
 
-ADD https://aka.ms/vs/17/release/vs_BuildTools.exe C:\vs_BuildTools.exe
+# 1. Установка Wine и 32‑битной поддержки
+RUN dpkg --add-architecture i386 && \
+    apt-get update && \
+    apt-get install -y wine32 wine64 xvfb && \
+    rm -rf /var/lib/apt/lists/*
 
-RUN C:\vs_BuildTools.exe --quiet --wait --norestart --nocache `
-    --add Microsoft.VisualStudio.Workload.VCTools `
-    --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-    --add Microsoft.VisualStudio.Component.Windows10SDK.19041 `
-    --add Microsoft.VisualStudio.Component.VC.MASM `
-    --includeRecommended --installPath C:\BuildTools `
- && del C:\vs_BuildTools.exe
+# 2. Создаём префикс Wine и ставим необходимые библиотеки (VC++ redist)
+RUN xvfb-run wine wineboot --init && \
+    xvfb-run wineserver -w
 
-FROM --platform=windows/amd64 mcr.microsoft.com/windows/servercore:ltsc2022
+# 3. Копируем MASM из вашего Windows‑образа
+COPY --from=ghcr.io/ice-rider/dev_env_masm_x86_container:aa7c95e9df5a5cb4228031d76f74353f17d82abf \
+    ["C:\\BuildTools", "/opt/BuildTools"]
 
-COPY --from=installer ["C:\\BuildTools", "C:\\BuildTools"]
+# 4. Прописываем PATH для MASM внутри Wine
+RUN wine reg add "HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment" \
+    /v PATH /t REG_EXPAND_SZ \
+    /d "C:\\windows\\system32;C:\\windows;C:\\BuildTools\\VC\\Tools\\MSVC\\14.40.33807\\bin\\Hostx64\\x86;C:\\BuildTools\\VC\\Tools\\MSVC\\14.40.33807\\bin\\Hostx86\\x86;C:\\BuildTools\\Common7\\IDE" \
+    /f
 
-SHELL ["powershell", "-Command", "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue';"]
+# 5. Алиас для удобного вызова ml.exe
+RUN echo '#!/bin/bash\nxvfb-run wine /opt/BuildTools/VC/Tools/MSVC/*/bin/Hostx64/x86/ml.exe "$@"' > /usr/local/bin/ml \
+    && chmod +x /usr/local/bin/ml
 
-RUN $msvcPath = (Get-ChildItem C:\BuildTools\VC\Tools\MSVC -Directory | Select-Object -First 1).FullName; `
-    $newPath = $env:PATH + \";$msvcPath\bin\Hostx64\x86;$msvcPath\bin\Hostx86\x86;C:\BuildTools\Common7\IDE\"; `
-    setx /M PATH $newPath
-
-WORKDIR C:\workspace
-CMD ["cmd.exe"]
+WORKDIR /workspace
+CMD ["/bin/bash"]
